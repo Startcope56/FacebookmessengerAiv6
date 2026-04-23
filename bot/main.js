@@ -6,10 +6,27 @@
    ============================================================ */
 
 const fs = require("fs");
+const http = require("http");
 const path = require("path");
 const axios = require("axios");
 const login = require("stfca");
 const Data = require("./Data");
+
+/* ─── Tiny health-check HTTP server (for deployment) ─────── */
+const PORT = parseInt(process.env.PORT || "3000", 10);
+http.createServer((req, res) => {
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({
+    status: "ok",
+    bot: Data.botName,
+    owner: Data.ownerName,
+    version: Data.version,
+    uptimeSec: Math.floor(process.uptime()),
+    autoPost: Data.autoPost.enabled,
+  }));
+}).listen(PORT, "0.0.0.0", () => {
+  console.log(`🌐 Health server listening on port ${PORT}`);
+});
 
 const APPSTATE_PATH = path.join(__dirname, "appstate.json");
 const STATE_PATH = path.join(__dirname, Data.autoPost.stateFile);
