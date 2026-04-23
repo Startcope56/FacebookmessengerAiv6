@@ -38,39 +38,63 @@ module.exports = {
 
   // ─── Available bot commands ───────────────────────────────
   commands: {
-    help: {
-      description: "Show all available commands",
-      usage: "/help",
-    },
-    info: {
-      description: "Show bot info",
-      usage: "/info",
-    },
-    ping: {
-      description: "Check if the bot is alive",
-      usage: "/ping",
-    },
-    uptime: {
-      description: "Show how long the bot has been running",
-      usage: "/uptime",
-    },
-    say: {
-      description: "Bot will repeat what you say",
-      usage: "/say <message>",
-    },
-    quote: {
-      description: "Get a random motivational quote",
-      usage: "/quote",
-    },
-    joke: {
-      description: "Get a random joke",
-      usage: "/joke",
-    },
-    owner: {
-      description: "Show bot owner info",
-      usage: "/owner",
-    },
+    help: { description: "Show all available commands", usage: "/help" },
+    info: { description: "Show bot info", usage: "/info" },
+    ping: { description: "Check if the bot is alive", usage: "/ping" },
+    uptime: { description: "Show how long the bot has been running", usage: "/uptime" },
+    say: { description: "Bot will repeat what you say", usage: "/say <message>" },
+    quote: { description: "Get a random motivational quote", usage: "/quote" },
+    joke: { description: "Get a random joke", usage: "/joke" },
+    owner: { description: "Show bot owner info", usage: "/owner" },
+    post: { description: "Create a Facebook post", usage: "/post <message>" },
+    autopost: { description: "Toggle 24/7 auto-news posting (admins)", usage: "/autopost on | off | status" },
   },
+
+  // ─── Auto-post news settings ──────────────────────────────
+  autoPost: {
+    enabled: true,                   // on by default; toggle with /autopost
+    intervalMinutes: 6,              // post every ~6 minutes
+    jitterSeconds: 90,               // ±90s random variance to look human
+    skipChance: 0.12,                // 12% chance to skip a cycle (natural pause)
+    typingDelayMs: [4000, 11000],    // simulated "typing" pause range
+    apiUrl: "https://newsdata.io/api/1/latest?apikey=pub_4b1ec47b99fd4f8a9be3475f69e0f979&q=Philippines%20",
+    stateFile: "autopost_state.json",
+    historyFile: "posted_news.json",
+    maxHistory: 200,
+  },
+
+  // ─── Human-like reaction variations (anti-detect) ─────────
+  postIntros: [
+    "Latest update 📰",
+    "News alert!",
+    "Just in:",
+    "Heads up:",
+    "Worth a read 👇",
+    "Kakaalam ko lang:",
+    "Bagong balita:",
+    "Sharing this:",
+    "Interesting one:",
+    "ICYMI:",
+    "Saw this earlier —",
+    "Para sa mga interesado:",
+    "Update ngayon:",
+    "Ito ang trending:",
+    "Real talk:",
+  ],
+  postOutros: [
+    "What do you think? 🤔",
+    "Thoughts?",
+    "Anong masasabi nyo?",
+    "Stay informed everyone 🙏",
+    "Share lang for awareness.",
+    "Ingat tayo lahat 🇵🇭",
+    "Para sa kaalaman natin.",
+    "Let's talk about this.",
+    "",  // sometimes no outro
+    "",
+    "",
+  ],
+  postEmojis: ["📰","🇵🇭","💭","✨","🙏","📢","🌏","💡","🔔","👀"],
 
   // ─── Random quotes ────────────────────────────────────────
   quotes: [
