@@ -1,0 +1,12 @@
+{
+  "name": "fb-messenger-bot-root",
+  "version": "1.0.0",
+  "description": "Facebook Messenger AI Bot — Owner: MANUELSON YASIS",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "postinstall": "cd bot && npm install --no-audit --no-fund"
+  },
+  "author": "MANUELSON YASIS",
+  "license": "MIT"
+}
