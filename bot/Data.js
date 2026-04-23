@@ -12,9 +12,8 @@ module.exports = {
   prefix: "/",
 
   // ─── Owner / Admin UIDs (Facebook user IDs) ───────────────
-  // Add your Facebook user ID here so the bot recognizes you as admin
   adminUIDs: [
-    // "100012345678901"
+    "61588479630286",
   ],
 
   // ─── Auto-greeting messages ───────────────────────────────
@@ -48,7 +47,12 @@ module.exports = {
     joke: { description: "Get a random joke", usage: "/joke" },
     owner: { description: "Show bot owner info", usage: "/owner" },
     post: { description: "Create a Facebook post", usage: "/post <message>" },
-    autopost: { description: "Toggle 24/7 auto-news posting (admins)", usage: "/autopost on | off | status" },
+    autopost: { description: "Toggle 24/7 auto-news posting (admins)", usage: "/autopost on | off | status | now" },
+    stream: { description: "MOR online streaming stations + live listeners", usage: "/stream" },
+    settings: { description: "Toggle AI features on/off (admins)", usage: "/settings [feature] [on|off]" },
+    install: { description: "Install custom command from code (admins)", usage: "/install <name.js>\\n<code>" },
+    uninstall: { description: "Remove an installed command (admins)", usage: "/uninstall <name>" },
+    commands: { description: "List all installed custom commands", usage: "/commands" },
   },
 
   // ─── Auto-post news settings ──────────────────────────────
@@ -58,7 +62,7 @@ module.exports = {
     jitterSeconds: 45,               // ±45s random variance to look human
     skipChance: 0.10,                // 10% chance to skip a cycle (natural pause)
     typingDelayMs: [3000, 9000],     // simulated "typing" pause range
-    maxPostsPerHour: 18,             // safety cap to avoid Meta rate-limit
+    maxPostsPerHour: 0,              // 0 = unlimited (use bot judgment / CPU only)
     apiUrl: "https://newsdata.io/api/1/latest?apikey=pub_4b1ec47b99fd4f8a9be3475f69e0f979&q=Philippines%20",
     stateFile: "autopost_state.json",
     historyFile: "posted_news.json",
@@ -129,12 +133,38 @@ module.exports = {
     "Bakit malungkot ang refrigerator? Kasi lagi siyang naiiwan sa bahay. ❄️",
   ],
 
-  // ─── Bot behavior settings ────────────────────────────────
+  // ─── Bot behavior settings (toggleable via /settings) ────
   settings: {
-    autoReply: true,
-    autoGreet: true,
-    logMessages: true,
-    typingIndicator: true,
-    reactToCommands: true,
+    autoReply: true,         // respond to keyword auto-replies
+    autoGreet: true,         // send greeting on common hellos
+    logMessages: true,       // log incoming messages to console
+    typingIndicator: true,   // show typing... before replies
+    reactToCommands: true,   // react with emoji to commands
+    autoPost: true,          // mirror of autoPost.enabled
+    protect: false,          // mirror of protectMode
+    customCommands: true,    // allow installed custom commands to run
+    antiDetect: true,        // anti-detect mutations on autopost
+    sessionKeepAlive: true,  // appstate auto-save + ping
+    dedupeMessages: true,    // ignore duplicate messageIDs (anti double-chat)
   },
+
+  // ─── MOR Online Streaming Stations ────────────────────────
+  stations: [
+    {
+      name: "MOR ENTERTAINMENT METRO MANILA",
+      slug: "mor-entertainment",
+      stationUrl: "https://zeno.fm/radio/mor-entertainment/",
+      streamUrl: "https://stream.zeno.fm/0r0xa792kwzuv",
+      provider: "zeno",
+      tagline: "🎙️ Metro Manila's #1 Entertainment Hub",
+    },
+    {
+      name: "MOR 97.1 CEBU",
+      slug: "mor-971-cebu",
+      stationUrl: "https://mor971lupigsila.blogspot.rs/",
+      streamUrl: null,
+      provider: "blogspot",
+      tagline: "🎙️ Lupig Sila — Cebu's hottest hits",
+    },
+  ],
 };

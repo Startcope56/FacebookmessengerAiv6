@@ -40,8 +40,26 @@ let protectMode = Data.protection.defaultProtected;
 let autoPostTimer = null;
 let lastAutoPostAt = null;
 let autoPostCount = 0;
-let postTimestamps = []; // for hourly cap
+let postTimestamps = []; // for hourly cap (if enabled)
 let activatedAt = null;
+
+// Anti double-chat: dedupe seen messageIDs (TTL ~2min)
+const seenMessages = new Map();
+function alreadySeen(mid) {
+  if (!mid) return false;
+  const now = Date.now();
+  for (const [k, t] of seenMessages) if (now - t > 120_000) seenMessages.delete(k);
+  if (seenMessages.has(mid)) return true;
+  seenMessages.set(mid, now);
+  return false;
+}
+
+// Runtime feature toggles (clone from Data so we can mutate)
+const featureFlags = { ...Data.settings };
+
+// Custom command registry (loaded from bot/commands/*.js)
+const customCommands = new Map();
+const COMMANDS_DIR = path.join(__dirname, "commands");
 
 /* ─── Sans-Serif Bold Unicode converter (anti-detect bonus + style) ─── */
 const BOLD_MAP = {
@@ -147,6 +165,122 @@ function isAdmin(uid) {
   return Data.adminUIDs.length === 0 || Data.adminUIDs.includes(String(uid));
 }
 
+/* ─── Streaming station live status ──────────────────────── */
+async function checkStationLive(station) {
+  try {
+    if (station.provider === "zeno" && station.streamUrl) {
+      // Best-effort listener fetch from public Zeno page
+      try {
+        const res = await axios.get(station.stationUrl, { timeout: 8000, headers: { "User-Agent": "Mozilla/5.0" } });
+        const m = String(res.data).match(/listeners?["':\s]+([\d,]+)/i);
+        if (m) {
+          const n = parseInt(m[1].replace(/,/g, ""), 10);
+          if (!isNaN(n)) return { online: true, totalListeners: n };
+        }
+      } catch {}
+      // Verify stream alive via HEAD
+      try {
+        const h = await axios.head(station.streamUrl, { timeout: 5000, validateStatus: () => true });
+        return { online: h.status >= 200 && h.status < 400, totalListeners: 0 };
+      } catch { return { online: false, totalListeners: 0 }; }
+    }
+    if (station.provider === "blogspot") {
+      const r = await axios.get(station.stationUrl, { timeout: 6000, validateStatus: () => true });
+      return { online: r.status >= 200 && r.status < 400, totalListeners: 0 };
+    }
+  } catch {}
+  return { online: false, totalListeners: 0 };
+}
+
+let _liveCache = null;
+async function gatherAllLive() {
+  const out = [];
+  for (const st of Data.stations) {
+    const live = await checkStationLive(st);
+    out.push({ ...st, ...live });
+  }
+  const total = out.reduce((s, x) => s + (x.totalListeners || 0), 0);
+  for (const o of out) {
+    o.percentage = total > 0 ? ((o.totalListeners / total) * 100).toFixed(1) : null;
+  }
+  _liveCache = out;
+  return out;
+}
+// override checkStationLive to add percentage from cached aggregate
+const _originalCheck = checkStationLive;
+async function checkStationLiveWithPct(station) {
+  if (!_liveCache || !_liveCache.find(x => x.slug === station.slug)) await gatherAllLive();
+  const found = _liveCache.find(x => x.slug === station.slug);
+  return found || { online: false, totalListeners: 0, percentage: null };
+}
+// Replace by reassignment
+checkStationLive = checkStationLiveWithPct;
+async function sumListeners() {
+  const arr = _liveCache || await gatherAllLive();
+  const t = arr.reduce((s, x) => s + (x.totalListeners || 0), 0);
+  return t > 0 ? t.toLocaleString() : "—";
+}
+
+/* ─── Custom command loader (Mirai/GoatBot/Botpack compat) ─ */
+function loadCustomCommand(filePath) {
+  try {
+    delete require.cache[require.resolve(filePath)];
+    const mod = require(filePath);
+    let name, description, runner, format = "generic";
+
+    // GoatBot V2 / Mirai style: { config: {name, description}, onStart/onChat }
+    if (mod.config && (mod.onStart || mod.onChat || mod.run || mod.execute)) {
+      name = (mod.config.name || path.basename(filePath, ".js")).toLowerCase();
+      description = mod.config.description || mod.config.shortDescription?.en || "";
+      runner = mod.onStart || mod.onChat || mod.run || mod.execute;
+      format = mod.onStart ? "GoatBotV2" : (mod.onChat ? "Mirai" : "Legacy");
+    }
+    // Legacy module.exports.run + module.exports.config
+    else if (typeof mod.run === "function") {
+      name = (mod.config?.name || path.basename(filePath, ".js")).toLowerCase();
+      description = mod.config?.description || "";
+      runner = mod.run; format = "Botpack";
+    }
+    // Plain function export
+    else if (typeof mod === "function") {
+      name = path.basename(filePath, ".js").toLowerCase();
+      runner = mod; format = "Function";
+    } else { return null; }
+
+    customCommands.set(name, { name, description, runner, format, file: filePath });
+    return { name, description, format };
+  } catch (e) {
+    console.error(`❌ loadCustomCommand(${filePath}):`, e.message);
+    return null;
+  }
+}
+
+function loadAllCustomCommands() {
+  if (!fs.existsSync(COMMANDS_DIR)) { fs.mkdirSync(COMMANDS_DIR); return; }
+  const files = fs.readdirSync(COMMANDS_DIR).filter(f => f.endsWith(".js"));
+  for (const f of files) loadCustomCommand(path.join(COMMANDS_DIR, f));
+  if (files.length) console.log(`📦 Loaded ${customCommands.size} custom command(s)`);
+}
+
+async function runCustomCommand(name, api, event, args) {
+  const c = customCommands.get(name);
+  if (!c) return false;
+  try {
+    const ctx = {
+      api, event, args, message: { reply: (m) => api.sendMessage(m, event.threadID, event.messageID) },
+      threadID: event.threadID, senderID: event.senderID, body: event.body,
+      Data, Users: {}, Threads: {}, getLang: (k) => k,
+    };
+    // Try multiple call signatures for compatibility
+    try { await c.runner(ctx); }
+    catch { await c.runner(api, event, args); }
+  } catch (e) {
+    console.error(`Custom cmd "${name}" error:`, e);
+    api.sendMessage(`⚠️ Error in custom command "${name}": ${e.message}`, event.threadID);
+  }
+  return true;
+}
+
 /* ─── News fetching & freshness ──────────────────────────── */
 async function fetchNews() {
   const res = await axios.get(Data.autoPost.apiUrl, {
@@ -227,9 +361,11 @@ function composePost(article) {
 let apiRef = null;
 
 function withinHourlyCap() {
+  const cap = Data.autoPost.maxPostsPerHour;
+  if (!cap || cap <= 0) return true; // unlimited
   const cutoff = Date.now() - 3600_000;
   postTimestamps = postTimestamps.filter(t => t > cutoff);
-  return postTimestamps.length < Data.autoPost.maxPostsPerHour;
+  return postTimestamps.length < cap;
 }
 
 async function runAutoPostCycle() {
@@ -400,6 +536,8 @@ async function handleCommand(api, event, cmd, args) {
         return send("🛑 Auto-post OFF.");
       }
       if (sub === "now") { send("📰 Posting now..."); await runAutoPostCycle(); return; }
+      const capStr = (!Data.autoPost.maxPostsPerHour || Data.autoPost.maxPostsPerHour <= 0)
+        ? "♾️ UNLIMITED (CPU-bound)" : `${Data.autoPost.maxPostsPerHour}/hr`;
       return send(
         `📰 ${toBold("Auto-Post Status")}\n${"─".repeat(22)}\n` +
         `State: ${autoPostEnabled ? "✅ ON (24/7)" : "🛑 OFF"}\n` +
@@ -407,9 +545,117 @@ async function handleCommand(api, event, cmd, args) {
         `Brand: ${Data.autoPost.brand.name}\n` +
         `Posts: ${autoPostCount}\n` +
         `Last: ${lastAutoPostAt || "never"}\n` +
-        `Cap: ${Data.autoPost.maxPostsPerHour}/hr\n` +
+        `Cap: ${capStr}\n` +
+        `Storage: ♾️ unlimited\n` +
         `Anti-detect: 🛡️ ENABLED`
       );
+    }
+
+    /* ─── /stream — MOR online streaming stations ─── */
+    case "stream": {
+      send("📻 Fetching live status of MOR stations...");
+      const lines = [`📻 ${toBold("DO YOU WANT ONLINE STREAMING MOR HERE?")}`, "━".repeat(30)];
+      for (const st of Data.stations) {
+        const live = await checkStationLive(st);
+        const total = live.totalListeners || 0;
+        const pct = live.percentage != null ? `${live.percentage}%` : "—";
+        lines.push("");
+        lines.push(`${live.online ? "🔴 LIVE" : "⚫ OFFLINE"} · ${toBold(st.name)}`);
+        lines.push(st.tagline);
+        lines.push(`👥 Listeners: ${total > 0 ? total.toLocaleString() : "—"}  (~${pct})`);
+        lines.push(`🔗 ${st.stationUrl}`);
+      }
+      lines.push("");
+      lines.push("━".repeat(30));
+      lines.push(`📊 Total network listeners: ${(await sumListeners())}`);
+      lines.push(`📡 ${Data.autoPost.brand.name} · ${Data.ownerName}`);
+      return send(lines.join("\n"));
+    }
+
+    /* ─── /settings [feature] [on|off] ─── */
+    case "settings": {
+      if (args.length === 0) {
+        const lines = [`⚙️ ${toBold("AI Settings")}`, "━".repeat(28)];
+        for (const [k, v] of Object.entries(featureFlags)) {
+          lines.push(`${v ? "🟢" : "🔴"} ${k.padEnd(20)} ${v ? "ON" : "OFF"}`);
+        }
+        lines.push("━".repeat(28));
+        lines.push(`Usage: ${Data.prefix}settings <feature> on|off`);
+        return send(lines.join("\n"));
+      }
+      if (!isAdmin(event.senderID)) return send("🚫 Admins only.");
+      const key = args[0];
+      const val = (args[1] || "").toLowerCase();
+      if (!(key in featureFlags)) return send(`❓ Unknown feature: ${key}`);
+      if (val !== "on" && val !== "off") return send(`Usage: ${Data.prefix}settings ${key} on|off`);
+      featureFlags[key] = val === "on";
+      // Mirror critical flags
+      if (key === "autoPost") {
+        autoPostEnabled = featureFlags[key];
+        if (autoPostEnabled) startAutoPost(); else stopAutoPost();
+      }
+      if (key === "protect") protectMode = featureFlags[key];
+      saveState();
+      return send(`✅ Setting "${key}" set to ${val.toUpperCase()}`);
+    }
+
+    /* ─── /install <name>\n<code> ─── */
+    case "install": {
+      if (!isAdmin(event.senderID)) return send("🚫 Admins only.");
+      // Parse: /install name.js\n<code...>
+      const raw = event.body.slice(Data.prefix.length + cmd.length).trim();
+      const nl = raw.indexOf("\n");
+      if (nl < 0) return send(`Usage:\n${Data.prefix}install <name.js>\n<code...>`);
+      let name = raw.slice(0, nl).trim();
+      const code = raw.slice(nl + 1).trim();
+      if (!name) return send("⚠️ Please provide a command name.");
+      if (!code) return send("⚠️ Please provide command code after the filename.");
+      if (!name.endsWith(".js")) name += ".js";
+      const safe = name.replace(/[^a-z0-9._-]/gi, "");
+      const fp = path.join(COMMANDS_DIR, safe);
+      try {
+        if (!fs.existsSync(COMMANDS_DIR)) fs.mkdirSync(COMMANDS_DIR);
+        fs.writeFileSync(fp, code, "utf8");
+        const mod = loadCustomCommand(fp);
+        if (!mod) { fs.unlinkSync(fp); return send("❌ Command code is invalid (no exports detected)."); }
+        return send(
+          `✅ Installed: ${toBold(mod.name)}\n` +
+          `📁 File: commands/${safe}\n` +
+          `📝 Description: ${mod.description || "(none)"}\n` +
+          `▶ Usage: ${Data.prefix}${mod.name}\n` +
+          `🔧 Format: ${mod.format}`
+        );
+      } catch (e) {
+        return send(`❌ Install failed: ${e.message}`);
+      }
+    }
+
+    /* ─── /uninstall <name> ─── */
+    case "uninstall": {
+      if (!isAdmin(event.senderID)) return send("🚫 Admins only.");
+      const target = (args[0] || "").toLowerCase().replace(/\.js$/, "");
+      if (!target) return send(`Usage: ${Data.prefix}uninstall <name>`);
+      let removed = false;
+      for (const [n, info] of customCommands) {
+        if (n === target) {
+          try { fs.unlinkSync(info.file); } catch {}
+          customCommands.delete(n);
+          removed = true; break;
+        }
+      }
+      return send(removed ? `🗑️ Uninstalled: ${target}` : `❓ Not found: ${target}`);
+    }
+
+    /* ─── /commands — list installed custom commands ─── */
+    case "commands": {
+      if (customCommands.size === 0)
+        return send(`📦 No custom commands installed.\nUse ${Data.prefix}install <name.js> + code to add one.`);
+      const lines = [`📦 ${toBold("Installed Custom Commands")}`, "━".repeat(28)];
+      for (const [n, info] of customCommands) {
+        lines.push(`• ${Data.prefix}${n}  [${info.format}]`);
+        if (info.description) lines.push(`    ${info.description}`);
+      }
+      return send(lines.join("\n"));
     }
 
     /* ─── /protect on|off|status ─── */
@@ -468,8 +714,11 @@ function startBot() {
       if (err) { console.error("⚠️  Listen error:", err); return; }
       if (event.type !== "message" || !event.body) return;
 
+      // Anti double-chat: dedupe by messageID
+      if (featureFlags.dedupeMessages && alreadySeen(event.messageID)) return;
+
       const body = event.body.trim();
-      if (Data.settings.logMessages)
+      if (featureFlags.logMessages)
         console.log(`📩 [${event.threadID}] ${event.senderID}: ${body}`);
 
       const senderIsAdmin = isAdmin(event.senderID);
@@ -481,12 +730,19 @@ function startBot() {
         return;
       }
 
-      // Commands
+      // Commands (built-in OR installed custom)
       if (body.startsWith(Data.prefix)) {
         const parts = body.slice(Data.prefix.length).trim().split(/\s+/);
         const cmd = (parts.shift() || "").toLowerCase();
-        try { await handleCommand(api, event, cmd, parts); }
-        catch (e) {
+        try {
+          if (Data.commands[cmd] || ["autopost","protect","stream","settings","install","uninstall","commands"].includes(cmd)) {
+            await handleCommand(api, event, cmd, parts);
+          } else if (featureFlags.customCommands && customCommands.has(cmd)) {
+            await runCustomCommand(cmd, api, event, parts);
+          } else {
+            await handleCommand(api, event, cmd, parts);
+          }
+        } catch (e) {
           console.error("Command error:", e);
           try { api.sendMessage("⚠️ An error occurred running that command.", event.threadID); } catch {}
         }
@@ -494,14 +750,15 @@ function startBot() {
       }
 
       // Auto-reply
-      if (Data.settings.autoReply) {
+      if (featureFlags.autoReply) {
         const reply = matchAutoReply(body);
         if (reply) { try { api.sendMessage(reply, event.threadID); } catch {} }
       }
     });
 
-    startSessionKeepAlive();
-    startAutoPost();
+    loadAllCustomCommands();
+    if (featureFlags.sessionKeepAlive) startSessionKeepAlive();
+    if (autoPostEnabled) startAutoPost();
   });
 }
 
