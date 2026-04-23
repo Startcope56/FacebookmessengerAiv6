@@ -1,0 +1,15 @@
+{
+  "name": "fb-messenger-ai-bot",
+  "version": "1.0.0",
+  "description": "Facebook Messenger AI Bot powered by stfca - Owner: MANUELSON YASIS",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js"
+  },
+  "author": "MANUELSON YASIS",
+  "license": "MIT",
+  "dependencies": {
+    "stfca": "^1.0.25",
+    "axios": "^1.8.4"
+  }
+}
