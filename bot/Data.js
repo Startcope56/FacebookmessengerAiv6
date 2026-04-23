@@ -40,6 +40,7 @@ module.exports = {
   commands: {
     help: { description: "Show all available commands", usage: "/help" },
     info: { description: "Show bot info", usage: "/info" },
+    protect: { description: "Toggle chat protection (admins only)", usage: "/protect on | off | status" },
     ping: { description: "Check if the bot is alive", usage: "/ping" },
     uptime: { description: "Show how long the bot has been running", usage: "/uptime" },
     say: { description: "Bot will repeat what you say", usage: "/say <message>" },
@@ -52,15 +53,27 @@ module.exports = {
 
   // ─── Auto-post news settings ──────────────────────────────
   autoPost: {
-    enabled: true,                   // on by default; toggle with /autopost
-    intervalMinutes: 6,              // post every ~6 minutes
-    jitterSeconds: 90,               // ±90s random variance to look human
-    skipChance: 0.12,                // 12% chance to skip a cycle (natural pause)
-    typingDelayMs: [4000, 11000],    // simulated "typing" pause range
+    enabled: true,                   // 24/7, never turns off
+    intervalMinutes: 3,              // post every ~3 minutes
+    jitterSeconds: 45,               // ±45s random variance to look human
+    skipChance: 0.10,                // 10% chance to skip a cycle (natural pause)
+    typingDelayMs: [3000, 9000],     // simulated "typing" pause range
+    maxPostsPerHour: 18,             // safety cap to avoid Meta rate-limit
     apiUrl: "https://newsdata.io/api/1/latest?apikey=pub_4b1ec47b99fd4f8a9be3475f69e0f979&q=Philippines%20",
     stateFile: "autopost_state.json",
     historyFile: "posted_news.json",
     maxHistory: 200,
+    brand: {
+      name: "MOR 101.9 NAGA NEWS",
+      tagline: "Para sa Naga, Para sa Pilipinas",
+      footerLine: "📻 MOR 101.9 NAGA · Tune in for more updates",
+    },
+  },
+
+  // ─── Bot protection (admin-only chat lock) ────────────────
+  protection: {
+    defaultProtected: false,         // /protect off by default
+    protectMessage: "🔐 THIS AI IS PROTECTED BY THE ADMIN\n\nTo all users: please do NOT chat.\nOnly news posts are active right now.\n\n— Admin",
   },
 
   // ─── Human-like reaction variations (anti-detect) ─────────
