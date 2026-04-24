@@ -8,8 +8,10 @@ module.exports = {
   // ─── Bot Identity ─────────────────────────────────────────
   botName: "MANUELSON AI BOT",
   ownerName: "MANUELSON YASIS",
-  version: "1.0.0",
+  version: "3.0.0",
   prefix: "/",
+  protectionLevel: "V3",
+  fcaVersion: "2.9.5.1 high-speed",
 
   // ─── Owner / Admin UIDs (Facebook user IDs) ───────────────
   adminUIDs: [

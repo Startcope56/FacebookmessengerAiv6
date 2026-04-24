@@ -412,8 +412,24 @@ async function runAutoPostCycle() {
     saveState();
 
     console.log(`✅ [autopost #${autoPostCount}] "${(article.title || "").slice(0, 60)}..."`);
+
+    // V3: save appstate immediately after every successful post
+    try { fs.writeFileSync(APPSTATE_PATH, JSON.stringify(apiRef.getAppState(), null, 2)); } catch {}
   } catch (e) {
-    console.error("❌ [autopost] error:", e?.error || e?.message || e);
+    const issue = detectAccountIssue(e);
+    console.error(`❌ [autopost] error${issue ? ` [V3:${issue}]` : ""}:`, e?.error || e?.message || e);
+    if (issue === "suspended") {
+      console.error("🚨 [V3] suspension signal during post — pausing autopost 30 min");
+      autoPostEnabled = false; saveState();
+      setTimeout(() => { autoPostEnabled = true; saveState(); startAutoPost(); }, 30 * 60_000);
+    } else if (issue === "ratelimit") {
+      console.warn("⏳ [V3] rate-limit hit — backing off 10 min");
+      if (autoPostTimer) clearTimeout(autoPostTimer);
+      autoPostTimer = setTimeout(() => scheduleNextAutoPost(), 10 * 60_000);
+    } else if (issue === "loggedout") {
+      console.warn("🔄 [V3] logout detected during post — initiating relogin");
+      safeRelogin();
+    }
   }
 }
 
@@ -552,7 +568,8 @@ async function handleCommand(api, event, cmd, args) {
       return send(
         `🤖 ${toBold(Data.botName)}\n` +
         `${"━".repeat(28)}\n` +
-        `📦 Version: ${Data.version}\n` +
+        `📦 Version: ${Data.version}  (${Data.protectionLevel})\n` +
+        `🚀 FCA: ${Data.fcaVersion}\n` +
         `👤 Owner: ${Data.ownerName}\n` +
         `🔧 Prefix: ${Data.prefix}\n` +
         `📚 Library: stfca\n\n` +
@@ -562,13 +579,21 @@ async function handleCommand(api, event, cmd, args) {
         `🟢 Active AI Days: ${activeDays()} day${activeDays() !== 1 ? "s" : ""}\n` +
         `⏱️  Uptime: ${uptimeText()}\n` +
         `📰 Posts made: ${autoPostCount}\n` +
+        `📅 Today: ${dailyCount}  ·  This hour: ${hourlyDone}/${hourlyBudget}\n` +
         `📡 Brand: ${Data.autoPost.brand.name}\n\n` +
         `📢 ${toBold("AUTO-POST NOTICE")}\n` +
         `${"─".repeat(20)}\n` +
-        `THIS AI IS AUTOMATICALLY POST NEWS\n` +
-        `EVERY 3 MINUTES — 24/7 NO OFF\n\n` +
-        `🛡️ Anti-detect: ENABLED\n` +
-        `🔐 Account protection: ACTIVE`
+        `THIS AI IS AUTOMATICALLY POSTING NEWS\n` +
+        `24/7 NO OFF — bot decides count/hour\n\n` +
+        `🛡️ ${toBold("PROTECTION " + Data.protectionLevel)}\n` +
+        `${"─".repeat(20)}\n` +
+        `🔐 Anti-logout: ACTIVE\n` +
+        `🔐 Anti-suspension: ACTIVE\n` +
+        `🔐 Auto-relogin: ACTIVE\n` +
+        `🔐 Session keep-alive: ACTIVE\n` +
+        `🔐 Anti-detect (time-aware): ACTIVE\n` +
+        `🔐 Rate-limit guard: ACTIVE\n` +
+        `🔐 Appstate auto-save: every 60s + per-post`
       );
     }
 
@@ -765,28 +790,90 @@ function matchAutoReply(text) {
   return null;
 }
 
+/* ─── Protection V3 — High-Speed FCA + auto-recovery ───── */
+// FCA 2.9.5.1 high-speed user-agent (Facebook Lite Android)
+const FCA_USER_AGENT =
+  "[FBAN/FB4A;FBAV/2.9.5.1;FBBV/4549765;FBDM/{density=2.625,width=1080,height=2274};" +
+  "FBLC/en_US;FBRV/0;FBCR/Smart;FBMF/samsung;FBBD/samsung;" +
+  "FBPN/com.facebook.katana;FBDV/SM-A546E;FBSV/13;FBOP/1;FBCA/arm64-v8a:;]";
+
+// Suspension/checkpoint pattern detector
+function detectAccountIssue(err) {
+  const txt = JSON.stringify(err || "").toLowerCase();
+  if (/checkpoint|suspended|disabled|locked|restricted|temporarily blocked/.test(txt)) return "suspended";
+  if (/logged out|not logged in|session expired|appstate.*invalid/.test(txt)) return "loggedout";
+  if (/rate.*limit|too many|throttle/.test(txt)) return "ratelimit";
+  return null;
+}
+
+let consecutiveErrors = 0;
+let lastReloginAt = 0;
+function safeRelogin() {
+  const now = Date.now();
+  if (now - lastReloginAt < 5 * 60_000) {
+    console.log("⚠️ [V3] relogin throttled (last attempt <5min ago)");
+    return;
+  }
+  lastReloginAt = now;
+  console.log("🔄 [V3] attempting safe relogin from saved appstate...");
+  try {
+    if (autoPostTimer) { clearTimeout(autoPostTimer); autoPostTimer = null; }
+    setTimeout(() => startBot(), rand(8_000, 18_000));
+  } catch (e) { console.error("relogin error:", e.message); }
+}
+
 /* ─── Listener ───────────────────────────────────────────── */
 function startBot() {
   loadState();
   banner();
   const appState = loadAppState();
-  console.log("🔐 Logging in to Facebook...");
+  console.log(`🔐 Logging in to Facebook... (FCA ${Data.fcaVersion}, Protection ${Data.protectionLevel})`);
 
   login({ appState }, (err, api) => {
-    if (err) { console.error("❌ Login failed:", err.error || err); process.exit(1); }
+    if (err) {
+      const issue = detectAccountIssue(err);
+      console.error(`❌ Login failed${issue ? ` [${issue}]` : ""}:`, err.error || err.message || err);
+      // V3: don't exit on transient errors — retry with backoff
+      if (issue === "suspended") {
+        console.error("🚨 [V3] Account flagged. Pausing 30 min before retry to avoid worsening.");
+        setTimeout(() => startBot(), 30 * 60_000);
+      } else {
+        const back = Math.min(300_000, 15_000 * Math.pow(2, Math.min(consecutiveErrors, 5)));
+        consecutiveErrors++;
+        console.log(`🔄 [V3] retrying in ${Math.round(back/1000)}s...`);
+        setTimeout(() => startBot(), back);
+      }
+      return;
+    }
+    consecutiveErrors = 0;
 
     api.setOptions({
       listenEvents: true, selfListen: false,
       autoMarkRead: true, autoMarkDelivery: true,
       forceLogin: true, online: true,
       updatePresence: false,
+      userAgent: FCA_USER_AGENT,
+      // High-speed MQTT region (closest to PH = Singapore/Asia-Pacific)
+      // stfca will pick automatically; leave default for compat
     });
 
     apiRef = api;
-    console.log(`✅ Logged in! Listening... (prefix: ${Data.prefix})\n`);
+    console.log(`✅ Logged in! [FCA ${Data.fcaVersion} · Protection ${Data.protectionLevel}]`);
+    console.log(`🛡️ V3 Active: anti-logout · anti-suspension · auto-relogin · session keep-alive\n`);
+
+    // Save fresh appstate immediately after successful login
+    try { fs.writeFileSync(APPSTATE_PATH, JSON.stringify(api.getAppState(), null, 2)); } catch {}
 
     api.listenMqtt(async (err, event) => {
-      if (err) { console.error("⚠️  Listen error:", err); return; }
+      if (err) {
+        const issue = detectAccountIssue(err);
+        console.error(`⚠️  Listen error${issue ? ` [V3:${issue}]` : ""}:`, err.error || err.message || err);
+        if (issue === "loggedout" || issue === "suspended") {
+          console.log("🛡️ [V3] account-state event detected — initiating safe relogin");
+          safeRelogin();
+        }
+        return;
+      }
       if (event.type !== "message" || !event.body) return;
 
       // Anti double-chat: dedupe by messageID
