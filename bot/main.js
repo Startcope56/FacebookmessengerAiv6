@@ -1,6 +1,6 @@
 /* ============================================================
    main.js — Facebook Messenger AI Bot
-   Library: stfca · Owner: MANUELSON YASIS
+   Library: MOR WS3 FCA (ws3-fca) · Owner: MANUELSON YASIS
    Features: Commands · Auto-reply · 24/7 News Auto-Post (3 min)
              · Chat Protection · Anti-Detect · Session Keep-Alive
    ============================================================ */
@@ -9,7 +9,7 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const axios = require("axios");
-const login = require("stfca");
+const login = require("ws3-fca").login;
 const Data = require("./Data");
 
 /* ─── Tiny health-check HTTP server (deployment) ─────────── */
@@ -968,12 +968,21 @@ function startBot() {
       if (featureFlags.logMessages)
         console.log(`📩 [${event.threadID}] ${event.senderID}: ${body}`);
 
+      // Helper: safe-send so errors never silently kill replies
+      const safeSend = async (text, mid) => {
+        try { await api.sendMessage(text, event.threadID, mid); }
+        catch (sendErr) {
+          console.error("sendMessage failed:", sendErr?.error || sendErr?.message || sendErr);
+          // retry once without messageID reply
+          try { await api.sendMessage(text, event.threadID); } catch {}
+        }
+      };
+
       const senderIsAdmin = isAdmin(event.senderID);
 
       // PROTECT MODE: block non-admins from interacting
       if (protectMode && !senderIsAdmin) {
-        try { await api.sendMessage(Data.protection.protectMessage, event.threadID, event.messageID); }
-        catch {}
+        await safeSend(Data.protection.protectMessage, event.messageID);
         return;
       }
 
@@ -982,24 +991,50 @@ function startBot() {
         const parts = body.slice(Data.prefix.length).trim().split(/\s+/);
         const cmd = (parts.shift() || "").toLowerCase();
         try {
-          if (Data.commands[cmd] || ["autopost","protect","stream","settings","install","uninstall","commands"].includes(cmd)) {
+          if (Data.commands[cmd] || ["autopost","protect","stream","settings","install","uninstall","commands","fca"].includes(cmd)) {
             await handleCommand(api, event, cmd, parts);
           } else if (featureFlags.customCommands && customCommands.has(cmd)) {
             await runCustomCommand(cmd, api, event, parts);
           } else {
-            await handleCommand(api, event, cmd, parts);
+            // Unknown command — always reply, never silent
+            await safeSend(`❓ Unknown command: /${cmd}\nType /help to see all commands.`, event.messageID);
           }
         } catch (e) {
           console.error("Command error:", e);
-          try { api.sendMessage("⚠️ An error occurred running that command.", event.threadID); } catch {}
+          await safeSend(
+            `⚠️ Nagka-error sa command /${cmd}:\n${(e?.message || e).toString().slice(0,300)}\n\nSubukan mo ulit o type /help.`,
+            event.messageID
+          );
         }
         return;
       }
 
-      // Auto-reply
-      if (featureFlags.autoReply) {
-        const reply = matchAutoReply(body);
-        if (reply) { try { api.sendMessage(reply, event.threadID); } catch {} }
+      // Auto-reply (with always-on fallback so bot always answers questions)
+      try {
+        const reply = featureFlags.autoReply ? matchAutoReply(body) : null;
+        if (reply) {
+          await safeSend(reply, event.messageID);
+        } else {
+          // Fallback: kapag tanong (?, ano, paano, sino, kailan, bakit, saan, what, how, who, when, why, where)
+          const isQuestion = /\?\s*$/.test(body) ||
+            /^(ano|anu|paano|pano|sino|kailan|bakit|saan|nasaan|pwede|puede|tulong|help|ano nga|what|how|who|when|why|where|can|could|please)\b/i.test(body);
+          if (isQuestion) {
+            await safeSend(
+              `🤖 ${toBold(Data.botName)}\n` +
+              `Hi! Nakuha ko ang tanong mo pero hindi pa ako handa sumagot dyan.\n\n` +
+              `Pwede mong subukan:\n` +
+              `• /help — listahan ng commands\n` +
+              `• /info — tungkol sa bot\n` +
+              `• /stream — MOR online radio\n` +
+              `• /fca — MOR WS3 FCA status\n\n` +
+              `Owner: ${Data.ownerName}`,
+              event.messageID
+            );
+          }
+        }
+      } catch (e) {
+        console.error("auto-reply error:", e);
+        await safeSend(`⚠️ Nagka-error sa pag-reply: ${(e?.message || e).toString().slice(0,200)}`, event.messageID);
       }
     });
 
