@@ -127,9 +127,10 @@ function saveHistory(arr) {
 /* ─── Banner ─────────────────────────────────────────────── */
 function banner() {
   console.log("\n" + "═".repeat(60));
-  console.log(`   🤖  ${Data.botName}  v${Data.version}`);
+  console.log(`   🤖  ${Data.botName}  v${Data.version}  (Protection ${Data.protectionLevel})`);
+  console.log(`   🚀  ${Data.fcaName} ${Data.fcaVersion}`);
   console.log(`   👤  Owner: ${Data.ownerName}`);
-  console.log(`   📰  Auto-Post: ${autoPostEnabled ? "ON (24/7, ~3 min)" : "OFF"}`);
+  console.log(`   📰  Auto-Post: ${autoPostEnabled ? "ON (adaptive 24/7)" : "OFF"}`);
   console.log(`   🔐  Protect Mode: ${protectMode ? "ON" : "OFF"}`);
   console.log(`   📡  Brand: ${Data.autoPost.brand.name}`);
   console.log("═".repeat(60) + "\n");
@@ -756,6 +757,90 @@ async function handleCommand(api, event, cmd, args) {
         if (info.description) lines.push(`    ${info.description}`);
       }
       return send(lines.join("\n"));
+    }
+
+    /* ─── /fca — MOR WS3 FCA manager ─── */
+    case "fca": {
+      const sub = (args[0] || "").toLowerCase();
+      const { exec } = require("child_process");
+
+      if (!sub || sub === "info" || sub === "status") {
+        // Read installed library versions from package.json
+        let stfcaVer = "?", ws3Ver = "(not installed)";
+        try {
+          const pkg = require(path.join(__dirname, "package.json"));
+          stfcaVer = pkg.dependencies?.stfca || "?";
+          ws3Ver = pkg.dependencies?.["ws3-fca"] || "(not installed)";
+        } catch {}
+        return send(
+          `🚀 ${toBold(Data.fcaName)}\n${"━".repeat(28)}\n` +
+          `📦 Brand: ${Data.fcaName}\n` +
+          `🔢 Version: ${Data.fcaVersion}\n` +
+          `📚 Active runtime: stfca ${stfcaVer}\n` +
+          `📚 ws3-fca pkg: ${ws3Ver}\n\n` +
+          `🛡️ ${toBold("Protection " + Data.protectionLevel)}\n` +
+          `${"─".repeat(20)}\n` +
+          `✅ Auto-logout fix: ACTIVE\n` +
+          `✅ Auto-suspension fix: ACTIVE\n` +
+          `✅ Double-message fix: ACTIVE\n` +
+          `✅ Auto-relogin: ACTIVE\n` +
+          `✅ Rate-limit guard: ACTIVE\n` +
+          `✅ High-speed UA: ACTIVE\n\n` +
+          `🛠️ ${toBold("Commands")}\n${"─".repeat(20)}\n` +
+          `/fca update              ⬆️ Update stfca + ws3-fca\n` +
+          `/fca install <pkg@ver>   📦 Install any FCA package\n` +
+          `/fca version <ver>       🎯 Install ws3-fca@<ver>\n` +
+          `/fca restart             🔄 Restart bot to apply`
+        );
+      }
+
+      if (!isAdmin(event.senderID)) return send("🚫 Admins only.");
+
+      if (sub === "update") {
+        send("⬆️ Updating MOR WS3 FCA libraries... please wait ~30s");
+        exec("cd " + JSON.stringify(__dirname) + " && npm install stfca@latest ws3-fca@latest --no-audit --no-fund 2>&1",
+          { timeout: 90_000 }, (err, stdout, stderr) => {
+            if (err) return api.sendMessage(`❌ Update failed:\n${(stderr||err.message).slice(0,500)}`, event.threadID);
+            api.sendMessage(`✅ ${toBold("MOR WS3 FCA updated!")}\n\nRun /fca restart to apply.`, event.threadID);
+          });
+        return;
+      }
+
+      if (sub === "install") {
+        const pkg = args.slice(1).join(" ").trim();
+        if (!pkg) return send("Usage: /fca install <pkg@version>\nExample: /fca install ws3-fca@latest");
+        // Sanitize: only allow valid npm package syntax
+        if (!/^[@a-z0-9._/-]+(@[a-z0-9._-]+)?$/i.test(pkg))
+          return send("⚠️ Invalid package name.");
+        send(`📦 Installing ${pkg}...`);
+        exec("cd " + JSON.stringify(__dirname) + ` && npm install ${pkg} --no-audit --no-fund 2>&1`,
+          { timeout: 120_000 }, (err, stdout, stderr) => {
+            if (err) return api.sendMessage(`❌ Install failed:\n${(stderr||err.message).slice(0,500)}`, event.threadID);
+            api.sendMessage(`✅ Installed: ${pkg}\n\nRun /fca restart to apply.`, event.threadID);
+          });
+        return;
+      }
+
+      if (sub === "version") {
+        const ver = (args[1] || "").trim();
+        if (!ver) return send("Usage: /fca version <version>\nExample: /fca version 2.9.5.1");
+        if (!/^[a-z0-9._-]+$/i.test(ver)) return send("⚠️ Invalid version.");
+        send(`🎯 Installing ws3-fca@${ver}...`);
+        exec("cd " + JSON.stringify(__dirname) + ` && npm install ws3-fca@${ver} --no-audit --no-fund 2>&1`,
+          { timeout: 120_000 }, (err, stdout, stderr) => {
+            if (err) return api.sendMessage(`❌ Install failed:\n${(stderr||err.message).slice(0,500)}`, event.threadID);
+            api.sendMessage(`✅ ws3-fca@${ver} installed.\nRun /fca restart to apply.`, event.threadID);
+          });
+        return;
+      }
+
+      if (sub === "restart") {
+        send(`🔄 ${toBold("Restarting bot...")}\nMOR WS3 FCA will reload in ~5s.`);
+        setTimeout(() => process.exit(0), 2500); // workflow auto-restarts
+        return;
+      }
+
+      return send(`❓ Unknown subcommand: ${sub}\nType /fca for menu.`);
     }
 
     /* ─── /protect on|off|status ─── */

@@ -11,6 +11,7 @@ module.exports = {
   version: "3.0.0",
   prefix: "/",
   protectionLevel: "V3",
+  fcaName: "MOR WS3 FCA",
   fcaVersion: "2.9.5.1 high-speed",
 
   // ─── Owner / Admin UIDs (Facebook user IDs) ───────────────
@@ -55,6 +56,7 @@ module.exports = {
     install: { description: "Install custom command from code (admins)", usage: "/install <name.js>\\n<code>" },
     uninstall: { description: "Remove an installed command (admins)", usage: "/uninstall <name>" },
     commands: { description: "List all installed custom commands", usage: "/commands" },
+    fca: { description: "MOR WS3 FCA manager (admins)", usage: "/fca | /fca update | /fca install <pkg@ver> | /fca version <ver> | /fca restart" },
   },
 
   // ─── Auto-post news settings ──────────────────────────────
