@@ -1,6 +1,6 @@
 {
   "autoPostEnabled": true,
-  "protectMode": false,
+  "protectMode": true,
   "autoPostCount": 0,
   "lastAutoPostAt": null
 }

@@ -398,6 +398,8 @@ async function runAutoPostCycle() {
 
     const post = await apiRef.createPost(text);
     autoPostCount++;
+    hourlyDone++;
+    dailyCount++;
     lastAutoPostAt = new Date().toISOString();
     postTimestamps.push(Date.now());
 
@@ -415,22 +417,94 @@ async function runAutoPostCycle() {
   }
 }
 
+/* ─── Adaptive hourly scheduler — anti-detect intelligence ── */
+// Bot decides each hour: how many posts, and naturally varies gaps.
+// Daily 24/7 — never stops, but mimics human posting rhythm.
+let hourlyBudget = 0;          // posts target this hour
+let hourlyDone = 0;            // posts completed this hour
+let currentHourKey = null;     // "YYYY-MM-DD-HH"
+let dailyCount = 0;
+let dailyDateKey = null;
+
+function hourKey(d = new Date()) {
+  return `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}-${d.getUTCHours()}`;
+}
+function dayKey(d = new Date()) {
+  return `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+}
+
+function decideHourlyBudget() {
+  // Bot judges based on Manila time (UTC+8) — humans post less at deep night
+  const phHour = (new Date().getUTCHours() + 8) % 24;
+  let lo, hi;
+  if (phHour >= 1 && phHour < 6)       { lo = 3;  hi = 7;  }   // 1am-6am: low
+  else if (phHour >= 6 && phHour < 9)  { lo = 6;  hi = 11; }   // 6am-9am: morning
+  else if (phHour >= 9 && phHour < 12) { lo = 10; hi = 16; }   // 9am-12nn: peak
+  else if (phHour >= 12 && phHour < 14){ lo = 8;  hi = 14; }   // lunch
+  else if (phHour >= 14 && phHour < 18){ lo = 10; hi = 16; }   // afternoon peak
+  else if (phHour >= 18 && phHour < 22){ lo = 11; hi = 18; }   // primetime
+  else                                  { lo = 5;  hi = 9;  }   // late night
+  return rand(lo, hi);
+}
+
+function rotateHourIfNeeded() {
+  const k = hourKey();
+  if (k !== currentHourKey) {
+    if (currentHourKey !== null) {
+      console.log(`📊 [autopost] hour ${currentHourKey} done — ${hourlyDone}/${hourlyBudget} posts`);
+    }
+    currentHourKey = k;
+    hourlyDone = 0;
+    hourlyBudget = decideHourlyBudget();
+    const phHour = (new Date().getUTCHours() + 8) % 24;
+    console.log(`🧠 [autopost] new hour PH ${String(phHour).padStart(2,"0")}:00 — bot decided budget = ${hourlyBudget} posts`);
+  }
+  const dk = dayKey();
+  if (dk !== dailyDateKey) {
+    if (dailyDateKey !== null) console.log(`📅 [autopost] day ${dailyDateKey} done — ${dailyCount} total posts`);
+    dailyDateKey = dk; dailyCount = 0;
+  }
+}
+
 function scheduleNextAutoPost() {
   if (autoPostTimer) { clearTimeout(autoPostTimer); autoPostTimer = null; }
   if (!autoPostEnabled) return;
-  const baseMs = Data.autoPost.intervalMinutes * 60 * 1000;
-  const jitterMs = rand(-Data.autoPost.jitterSeconds, Data.autoPost.jitterSeconds) * 1000;
-  const wait = Math.max(60_000, baseMs + jitterMs);
-  console.log(`⏱️  [autopost] next in ${Math.round(wait / 1000)}s`);
+  rotateHourIfNeeded();
+
+  // Compute remaining time in this hour and distribute leftover posts naturally
+  const now = new Date();
+  const msToNextHour = (60 - now.getMinutes()) * 60_000 - now.getSeconds() * 1000;
+  const remaining = Math.max(0, hourlyBudget - hourlyDone);
+
+  let wait;
+  if (remaining <= 0) {
+    // Hour budget filled — wait until next hour with small jitter
+    wait = msToNextHour + rand(15_000, 90_000);
+    console.log(`💤 [autopost] hourly budget filled (${hourlyDone}/${hourlyBudget}) — pausing ${Math.round(wait/1000)}s until next hour`);
+  } else {
+    // Average gap = remaining time / remaining posts, then ±50% jitter
+    const avgGap = msToNextHour / remaining;
+    const jitter = avgGap * (Math.random() * 0.8 - 0.4); // ±40%
+    wait = Math.max(45_000, avgGap + jitter);
+    // Anti-detect: 8% chance of a "human break" 4-9 min
+    if (Math.random() < 0.08) {
+      wait += rand(240_000, 540_000);
+      console.log(`☕ [autopost] simulating human break (+${Math.round((wait-avgGap)/1000)}s)`);
+    }
+  }
+
+  console.log(`⏱️  [autopost] next in ${Math.round(wait/1000)}s · hour ${hourlyDone}/${hourlyBudget} · day ${dailyCount}`);
   autoPostTimer = setTimeout(async () => {
     await runAutoPostCycle();
     scheduleNextAutoPost();
   }, wait);
 }
+
 function startAutoPost() {
   if (!autoPostEnabled) return;
-  console.log("📰 [autopost] starting 24/7 cycle (3 min)...");
-  setTimeout(async () => { await runAutoPostCycle(); scheduleNextAutoPost(); }, rand(8_000, 25_000));
+  rotateHourIfNeeded();
+  console.log(`📰 [autopost] starting adaptive 24/7 — bot decides hourly count (smart anti-detect)`);
+  setTimeout(async () => { await runAutoPostCycle(); scheduleNextAutoPost(); }, rand(15_000, 60_000));
 }
 function stopAutoPost() {
   if (autoPostTimer) { clearTimeout(autoPostTimer); autoPostTimer = null; }
@@ -536,18 +610,19 @@ async function handleCommand(api, event, cmd, args) {
         return send("🛑 Auto-post OFF.");
       }
       if (sub === "now") { send("📰 Posting now..."); await runAutoPostCycle(); return; }
-      const capStr = (!Data.autoPost.maxPostsPerHour || Data.autoPost.maxPostsPerHour <= 0)
-        ? "♾️ UNLIMITED (CPU-bound)" : `${Data.autoPost.maxPostsPerHour}/hr`;
+      const phHour = (new Date().getUTCHours() + 8) % 24;
       return send(
         `📰 ${toBold("Auto-Post Status")}\n${"─".repeat(22)}\n` +
         `State: ${autoPostEnabled ? "✅ ON (24/7)" : "🛑 OFF"}\n` +
-        `Interval: ${Data.autoPost.intervalMinutes} min (±${Data.autoPost.jitterSeconds}s)\n` +
-        `Brand: ${Data.autoPost.brand.name}\n` +
-        `Posts: ${autoPostCount}\n` +
+        `Mode: 🧠 ADAPTIVE (bot decides)\n` +
+        `PH Hour: ${String(phHour).padStart(2,"0")}:00\n` +
+        `This hour: ${hourlyDone}/${hourlyBudget} posts\n` +
+        `Today: ${dailyCount} posts\n` +
+        `Total: ${autoPostCount} posts\n` +
         `Last: ${lastAutoPostAt || "never"}\n` +
-        `Cap: ${capStr}\n` +
+        `Brand: ${Data.autoPost.brand.name}\n` +
         `Storage: ♾️ unlimited\n` +
-        `Anti-detect: 🛡️ ENABLED`
+        `Anti-detect: 🛡️ INTELLIGENT (time-of-day aware)`
       );
     }
 
