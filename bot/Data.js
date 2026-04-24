@@ -57,6 +57,9 @@ module.exports = {
     uninstall: { description: "Remove an installed command (admins)", usage: "/uninstall <name>" },
     commands: { description: "List all installed custom commands", usage: "/commands" },
     fca: { description: "MOR WS3 FCA manager (admins)", usage: "/fca | /fca update | /fca install <pkg@ver> | /fca version <ver> | /fca restart" },
+    create: { description: "🤖 Create your own AI bot clone (anyone)", usage: "/create <adminUID>\\n<appstateJSON>" },
+    mybot:  { description: "Manage your created AI bot", usage: "/mybot | /mybot stop | /mybot start | /mybot delete" },
+    userbots: { description: "List all created user bots (main admins)", usage: "/userbots" },
   },
 
   // ─── Auto-post news settings ──────────────────────────────

@@ -11,6 +11,7 @@ const path = require("path");
 const axios = require("axios");
 const login = require("ws3-fca").login;
 const Data = require("./Data");
+const userBots = require("./userBots");
 
 /* ─── Tiny health-check HTTP server (deployment) ─────────── */
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -864,6 +865,103 @@ async function handleCommand(api, event, cmd, args) {
       return send(`❓ Unknown subcommand: ${sub}\nType /fca for menu.`);
     }
 
+    /* ─── /create — anyone can spawn their own AI clone ─── */
+    case "create": {
+      // Format: /create <adminUID>\n<appstateJSON>
+      // Or:     /create <adminUID> <appstateJSON-on-same-line>
+      const raw = (event.body || "").slice(Data.prefix.length + "create".length).trim();
+      if (!raw) {
+        return send(
+          `🤖 ${toBold("Create Your Own AI Bot")}\n${"─".repeat(28)}\n` +
+          `Format:\n/create <adminUID>\n<appstate JSON here>\n\n` +
+          `Example:\n/create 100012345678\n[{"key":"datr","value":"...",...}, ...]\n\n` +
+          `📌 Notes:\n` +
+          `• adminUID = FB user ID na may control sa bot mo\n` +
+          `• appstate = JSON cookies (kuhanin sa C3C FBState extension)\n` +
+          `• Yung bot mo gagana sa account na sinupplyhan ng appstate\n` +
+          `• Connected sa lahat ng commands ng main bot (/help, /izph, /stream, etc.)\n` +
+          `• Type /mybot kapag tapos na`
+        );
+      }
+
+      // Parse: first whitespace-token = adminUID, rest = appstate
+      const m = raw.match(/^(\S+)\s+([\s\S]+)$/);
+      if (!m) return send(`⚠️ Invalid format. Type /create alone for instructions.`);
+      const adminUID = m[1].trim();
+      const appstateRaw = m[2].trim();
+
+      if (!/^\d{6,20}$/.test(adminUID))
+        return send(`⚠️ Invalid adminUID — must be a numeric Facebook user ID.`);
+
+      send(`🔄 Creating your AI bot... validating appstate + logging in...`);
+      try {
+        const rec = await userBots.createFromCommand(
+          event.senderID, adminUID, appstateRaw, event.threadID
+        );
+        return send(
+          `✅ ${toBold("Your AI bot is ONLINE!")}\n${"─".repeat(28)}\n` +
+          `👤 Owner (you): ${rec.ownerUID}\n` +
+          `👑 Admin: ${rec.adminUID}\n` +
+          `🤖 Bot Account UID: ${rec.botUserID || "?"}\n` +
+          `⚙️  Status: ${rec.status}\n` +
+          `📅 Created: ${rec.createdAt}\n\n` +
+          `🛠️ Connected sa lahat ng commands ng main bot:\n` +
+          `/help · /info · /izph · /stream · /fca · /quote · /joke ...\n\n` +
+          `📊 Type /mybot anytime para mag-check ng status.`
+        );
+      } catch (e) {
+        return send(`❌ Create failed: ${(e.message || e).toString().slice(0, 400)}`);
+      }
+    }
+
+    /* ─── /mybot — manage your own clone ─── */
+    case "mybot": {
+      const sub = (args[0] || "status").toLowerCase();
+      const rec = userBots.getUserBot(event.senderID);
+      if (!rec) return send(`ℹ️ Wala ka pang AI bot.\nType /create para gumawa ng iyong sarili.`);
+
+      if (sub === "stop") {
+        userBots.stopUserBot(event.senderID);
+        return send(`🛑 Your AI bot has been stopped.\nType /mybot start para i-resume.`);
+      }
+      if (sub === "start") {
+        try {
+          const r = await userBots.startUserBot(rec.ownerUID, rec.adminUID, rec.threadID);
+          return send(`✅ Your AI bot is ONLINE again.\nStatus: ${r.status}`);
+        } catch (e) {
+          return send(`❌ Start failed: ${(e.message || e).toString().slice(0, 300)}`);
+        }
+      }
+      if (sub === "delete") {
+        userBots.deleteUserBot(event.senderID);
+        return send(`🗑️ Your AI bot has been deleted permanently.`);
+      }
+
+      return send(
+        `🤖 ${toBold("My AI Bot")}\n${"─".repeat(22)}\n` +
+        `👤 Owner: ${rec.ownerUID}\n` +
+        `👑 Admin: ${rec.adminUID}\n` +
+        `🤖 Bot UID: ${rec.botUserID || "?"}\n` +
+        `⚙️  Status: ${rec.status}\n` +
+        `📅 Created: ${rec.createdAt}\n` +
+        (rec.lastError ? `⚠️ Last error: ${rec.lastError}\n` : ``) +
+        `\n🛠️  Subcommands:\n` +
+        `/mybot start  · /mybot stop  · /mybot delete`
+      );
+    }
+
+    /* ─── /userbots — main admins list all clones ─── */
+    case "userbots": {
+      if (!isAdmin(event.senderID)) return send("🚫 Main admins only.");
+      const list = userBots.listUserBots();
+      if (list.length === 0) return send("📋 Walang user bots na nakaregister.");
+      let txt = `📋 ${toBold("Registered User Bots")} (${list.length})\n${"─".repeat(28)}\n`;
+      list.forEach((b, i) => {
+        txt += `\n${i + 1}. owner=${b.ownerUID}\n   admin=${b.adminUID}  bot=${b.botUserID || "?"}\n   status=${b.status}${b.lastError ? `  err=${b.lastError.slice(0,60)}` : ""}\n`;
+      });
+      return send(txt);
+    }
+
     /* ─── /protect on|off|status ─── */
     case "protect": {
       if (!isAdmin(event.senderID)) return send("🚫 Admins only.");
@@ -970,6 +1068,16 @@ function startBot() {
     // Save fresh appstate immediately after successful login
     try { fs.writeFileSync(APPSTATE_PATH, JSON.stringify(api.getAppState(), null, 2)); } catch {}
 
+    // 🤖 Initialize multi-tenant user-bots manager and restore saved clones
+    userBots.init({
+      handleCommand, matchAutoReply, customCommands, featureFlags, Data,
+      alreadySeen, runCustomCommand, isAdminUID: isAdmin, toBold,
+    });
+    userBots.restoreAll().then(() => {
+      const n = userBots.listUserBots().length;
+      if (n > 0) console.log(`🤖 [userbots] restored ${n} user clone(s)`);
+    });
+
     api.listenMqtt(async (err, event) => {
       if (err) {
         const issue = detectAccountIssue(err);
@@ -1012,7 +1120,7 @@ function startBot() {
         const parts = body.slice(Data.prefix.length).trim().split(/\s+/);
         const cmd = (parts.shift() || "").toLowerCase();
         try {
-          if (Data.commands[cmd] || ["autopost","protect","stream","settings","install","uninstall","commands","fca"].includes(cmd)) {
+          if (Data.commands[cmd] || ["autopost","protect","stream","settings","install","uninstall","commands","fca","create","mybot","userbots"].includes(cmd)) {
             await handleCommand(api, event, cmd, parts);
           } else if (featureFlags.customCommands && customCommands.has(cmd)) {
             await runCustomCommand(cmd, api, event, parts);
