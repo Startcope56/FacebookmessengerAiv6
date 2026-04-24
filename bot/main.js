@@ -130,7 +130,7 @@ function banner() {
   console.log(`   🤖  ${Data.botName}  v${Data.version}  (Protection ${Data.protectionLevel})`);
   console.log(`   🚀  ${Data.fcaName} ${Data.fcaVersion}`);
   console.log(`   👤  Owner: ${Data.ownerName}`);
-  console.log(`   📰  Auto-Post: ${autoPostEnabled ? "ON (adaptive 24/7)" : "OFF"}`);
+  console.log(`   📰  Auto-Post: ${autoPostEnabled ? "ON (1/hr · 5 AM-12 AM PH)" : "OFF"}`);
   console.log(`   🔐  Protect Mode: ${protectMode ? "ON" : "OFF"}`);
   console.log(`   📡  Brand: ${Data.autoPost.brand.name}`);
   console.log("═".repeat(60) + "\n");
@@ -372,15 +372,16 @@ function withinHourlyCap() {
 async function runAutoPostCycle() {
   if (!autoPostEnabled || !apiRef) return;
 
-  // Anti-detect: random skip
-  if (Math.random() < Data.autoPost.skipChance) {
-    console.log("📰 [autopost] natural pause — skipping cycle");
+  // 🌙 Quiet window guard — never post 12 AM - 5 AM PH
+  if (inQuietWindow()) {
+    console.log(`🌙 [autopost] quiet window (12 AM - 5 AM PH) — post skipped`);
     return;
   }
 
-  // Account-protection: hourly cap
-  if (!withinHourlyCap()) {
-    console.log(`📰 [autopost] hourly cap reached (${Data.autoPost.maxPostsPerHour}/hr) — skipping`);
+  // 1-post-per-hour mode: skip if this hour already done
+  rotateHourIfNeeded();
+  if (hourlyDone >= hourlyBudget) {
+    console.log(`✓ [autopost] hour budget reached (${hourlyDone}/${hourlyBudget}) — skip until next hour`);
     return;
   }
 
@@ -450,18 +451,26 @@ function dayKey(d = new Date()) {
   return `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
 }
 
+// Manila quiet window: 12:00 AM (0:00) → 4:59 AM = OFF; 5:00 AM → 11:59 PM = ON
+function phHourNow() { return (new Date().getUTCHours() + 8) % 24; }
+function inQuietWindow() {
+  const h = phHourNow();
+  return h >= 0 && h < 5; // 12:00 AM - 4:59 AM Manila
+}
+function msUntilManila5AM() {
+  // Manila is UTC+8. 5 AM PH = 21:00 UTC previous day OR 21:00 UTC same day.
+  const now = new Date();
+  // Next 21:00 UTC
+  const target = new Date(Date.UTC(
+    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 21, 0, 0
+  ));
+  if (target.getTime() <= now.getTime()) target.setUTCDate(target.getUTCDate() + 1);
+  return target.getTime() - now.getTime();
+}
+
 function decideHourlyBudget() {
-  // Bot judges based on Manila time (UTC+8) — humans post less at deep night
-  const phHour = (new Date().getUTCHours() + 8) % 24;
-  let lo, hi;
-  if (phHour >= 1 && phHour < 6)       { lo = 3;  hi = 7;  }   // 1am-6am: low
-  else if (phHour >= 6 && phHour < 9)  { lo = 6;  hi = 11; }   // 6am-9am: morning
-  else if (phHour >= 9 && phHour < 12) { lo = 10; hi = 16; }   // 9am-12nn: peak
-  else if (phHour >= 12 && phHour < 14){ lo = 8;  hi = 14; }   // lunch
-  else if (phHour >= 14 && phHour < 18){ lo = 10; hi = 16; }   // afternoon peak
-  else if (phHour >= 18 && phHour < 22){ lo = 11; hi = 18; }   // primetime
-  else                                  { lo = 5;  hi = 9;  }   // late night
-  return rand(lo, hi);
+  // 1 post per hour during active window (5 AM - 11:59 PM Manila), 0 during quiet
+  return inQuietWindow() ? 0 : 1;
 }
 
 function rotateHourIfNeeded() {
@@ -486,32 +495,32 @@ function rotateHourIfNeeded() {
 function scheduleNextAutoPost() {
   if (autoPostTimer) { clearTimeout(autoPostTimer); autoPostTimer = null; }
   if (!autoPostEnabled) return;
-  rotateHourIfNeeded();
 
-  // Compute remaining time in this hour and distribute leftover posts naturally
-  const now = new Date();
-  const msToNextHour = (60 - now.getMinutes()) * 60_000 - now.getSeconds() * 1000;
-  const remaining = Math.max(0, hourlyBudget - hourlyDone);
-
-  let wait;
-  if (remaining <= 0) {
-    // Hour budget filled — wait until next hour with small jitter
-    wait = msToNextHour + rand(15_000, 90_000);
-    console.log(`💤 [autopost] hourly budget filled (${hourlyDone}/${hourlyBudget}) — pausing ${Math.round(wait/1000)}s until next hour`);
-  } else {
-    // Average gap = remaining time / remaining posts, then ±50% jitter
-    const avgGap = msToNextHour / remaining;
-    const jitter = avgGap * (Math.random() * 0.8 - 0.4); // ±40%
-    wait = Math.max(45_000, avgGap + jitter);
-    // Anti-detect: 8% chance of a "human break" 4-9 min
-    if (Math.random() < 0.08) {
-      wait += rand(240_000, 540_000);
-      console.log(`☕ [autopost] simulating human break (+${Math.round((wait-avgGap)/1000)}s)`);
-    }
+  // 🌙 Quiet window 12:00 AM - 4:59 AM PH → auto-OFF until 5:00 AM
+  if (inQuietWindow()) {
+    const wait = msUntilManila5AM();
+    const hrs = Math.floor(wait / 3600_000);
+    const mins = Math.floor((wait % 3600_000) / 60_000);
+    console.log(`🌙 [autopost] quiet window active (12:00 AM - 5:00 AM PH) — auto-OFF, resume in ${hrs}h ${mins}m`);
+    autoPostTimer = setTimeout(() => {
+      console.log(`🌅 [autopost] 5:00 AM PH reached — auto-ON, resuming hourly posts`);
+      rotateHourIfNeeded();
+      runAutoPostCycle().finally(() => scheduleNextAutoPost());
+    }, wait);
+    return;
   }
 
-  console.log(`⏱️  [autopost] next in ${Math.round(wait/1000)}s · hour ${hourlyDone}/${hourlyBudget} · day ${dailyCount}`);
+  rotateHourIfNeeded();
+
+  // 🕐 1 post per hour — schedule next post ~1h from last post (with mild ±5min jitter for anti-detect)
+  const baseHour = 60 * 60 * 1000;          // 1 hour
+  const jitter = rand(-5 * 60_000, 5 * 60_000); // ±5 minutes
+  const wait = baseHour + jitter;
+
+  const phH = String(phHourNow()).padStart(2, "0");
+  console.log(`⏱️  [autopost] PH ${phH}:xx · next post in ${Math.round(wait/60_000)} min · day ${dailyCount}`);
   autoPostTimer = setTimeout(async () => {
+    if (inQuietWindow()) { scheduleNextAutoPost(); return; }
     await runAutoPostCycle();
     scheduleNextAutoPost();
   }, wait);
@@ -519,9 +528,14 @@ function scheduleNextAutoPost() {
 
 function startAutoPost() {
   if (!autoPostEnabled) return;
+  if (inQuietWindow()) {
+    console.log(`🌙 [autopost] starting in quiet window — will auto-resume at 5:00 AM PH`);
+    scheduleNextAutoPost();
+    return;
+  }
   rotateHourIfNeeded();
-  console.log(`📰 [autopost] starting adaptive 24/7 — bot decides hourly count (smart anti-detect)`);
-  setTimeout(async () => { await runAutoPostCycle(); scheduleNextAutoPost(); }, rand(15_000, 60_000));
+  console.log(`📰 [autopost] starting hourly mode (1 post/hr · 5 AM - 12 AM PH · anti-detect)`);
+  setTimeout(async () => { await runAutoPostCycle(); scheduleNextAutoPost(); }, rand(20_000, 60_000));
 }
 function stopAutoPost() {
   if (autoPostTimer) { clearTimeout(autoPostTimer); autoPostTimer = null; }
@@ -628,20 +642,27 @@ async function handleCommand(api, event, cmd, args) {
       if (sub === "on") {
         if (autoPostEnabled) return send("📰 Auto-post is already ON.");
         autoPostEnabled = true; saveState(); startAutoPost();
-        return send(`✅ Auto-post ON\n• Every ~${Data.autoPost.intervalMinutes} min (±${Data.autoPost.jitterSeconds}s)\n• Brand: ${Data.autoPost.brand.name}\n• Anti-detect: 🛡️`);
+        return send(`✅ ${toBold("Auto-post ON")}\n• 1 post/hour (±5 min)\n• Active: 5:00 AM - 11:59 PM PH\n• Quiet: 12:00 AM - 4:59 AM PH (auto-OFF)\n• Brand: ${Data.autoPost.brand.name}\n• Anti-detect: 🛡️`);
       }
       if (sub === "off") {
         if (!autoPostEnabled) return send("📰 Auto-post is already OFF.");
         autoPostEnabled = false; saveState(); stopAutoPost();
         return send("🛑 Auto-post OFF.");
       }
-      if (sub === "now") { send("📰 Posting now..."); await runAutoPostCycle(); return; }
-      const phHour = (new Date().getUTCHours() + 8) % 24;
+      if (sub === "now") {
+        if (!autoPostEnabled) return send("⚠️ Auto-post is OFF. Type /autopost on muna.");
+        if (inQuietWindow()) return send(`🌙 Quiet window pa (12 AM - 5 AM PH). Mag-resume sa 5:00 AM.`);
+        send("📰 Posting now...");
+        await runAutoPostCycle();
+        return;
+      }
+      const phHour = phHourNow();
+      const quiet = inQuietWindow();
       return send(
         `📰 ${toBold("Auto-Post Status")}\n${"─".repeat(22)}\n` +
-        `State: ${autoPostEnabled ? "✅ ON (24/7)" : "🛑 OFF"}\n` +
-        `Mode: 🧠 ADAPTIVE (bot decides)\n` +
-        `PH Hour: ${String(phHour).padStart(2,"0")}:00\n` +
+        `State: ${autoPostEnabled ? (quiet ? "🌙 ON (quiet window)" : "✅ ON (active)") : "🛑 OFF"}\n` +
+        `Mode: 🕐 1 post/hour (5 AM - 12 AM PH)\n` +
+        `PH Hour: ${String(phHour).padStart(2,"0")}:00 ${quiet ? "🌙 quiet" : "🌞 active"}\n` +
         `This hour: ${hourlyDone}/${hourlyBudget} posts\n` +
         `Today: ${dailyCount} posts\n` +
         `Total: ${autoPostCount} posts\n` +
